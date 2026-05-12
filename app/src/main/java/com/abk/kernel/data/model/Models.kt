@@ -104,6 +104,37 @@ data class BuildProgress(
     val steps: List<BuildStepProgress> = emptyList()
 )
 
+data class BuildParameterSummary(
+    val runId: Long,
+    val runNumber: Int = 0,
+    val runTitle: String = "",
+    val runCreatedAt: String = "",
+    val runHtmlUrl: String = "",
+    val androidVersion: String = "",
+    val kernelVersion: String = "",
+    val subLevel: String = "",
+    val osPatchLevel: String = "",
+    val ksuVariant: String = "",
+    val ksuBranch: String = "",
+    val buildTime: String = "",
+    val susfsEnabled: String = "",
+    val zramEnabled: String = "",
+    val zramFullAlgo: String = "",
+    val zramExtraAlgos: String = "",
+    val bbgEnabled: String = "",
+    val ddkLsm: String = "",
+    val ntsyncEnabled: String = "",
+    val networkingEnabled: String = "",
+    val kpmEnabled: String = "",
+    val kpmPassword: String = "",
+    val reKernelEnabled: String = "",
+    val virtualizationSupport: String = "",
+    val customInjection: String = "",
+    val stockConfig: String = "",
+    val source: String = "workflow_log",
+    val extraRows: Map<String, String>? = null
+)
+
 data class Artifact(
     val id: Long,
     val name: String,
@@ -170,14 +201,56 @@ data class ArtifactsResponse(
 )
 
 data class GitHubRelease(
+    val id: Long = 0L,
+    val name: String? = null,
     @SerializedName("tag_name") val tagName: String,
     @SerializedName("html_url") val htmlUrl: String,
+    @SerializedName("published_at") val publishedAt: String? = null,
+    val body: String? = null,
+    @SerializedName("assets_url") val assetsUrl: String? = null,
     val assets: List<ReleaseAsset> = emptyList()
 )
 
+data class GitHubReleaseSummary(
+    val id: Long = 0L,
+    val name: String? = null,
+    @SerializedName("tag_name") val tagName: String,
+    @SerializedName("html_url") val htmlUrl: String,
+    @SerializedName("published_at") val publishedAt: String? = null,
+    val body: String? = null,
+    @SerializedName("assets_url") val assetsUrl: String? = null
+)
+
 data class ReleaseAsset(
+    val id: Long = 0L,
     val name: String,
+    val size: Long = 0L,
+    @SerializedName("content_type") val contentType: String? = null,
     @SerializedName("browser_download_url") val browserDownloadUrl: String
+)
+
+data class PrebuiltGkiAsset(
+    val id: Long,
+    val name: String,
+    val sizeBytes: Long,
+    val browserDownloadUrl: String,
+    val contentType: String? = null,
+    val releaseTag: String,
+    val releaseName: String,
+    val releaseHtmlUrl: String,
+    val publishedAt: String,
+    val releaseBody: String = ""
+)
+
+data class PrebuiltGkiRelease(
+    val id: Long,
+    val apiId: Long = id,
+    val tagName: String,
+    val name: String,
+    val htmlUrl: String,
+    val publishedAt: String,
+    val body: String = "",
+    val assetCount: Int = 0
 )
 
 // GitHub Device Flow OAuth
@@ -243,6 +316,8 @@ data class KernelBuildConfig(
     val useZram: Boolean = false,
     val useBbg: Boolean = false,
     val useDdk: Boolean = false,
+    val useNtsync: Boolean = false,
+    val useNetworking: Boolean = false,
     val useKpm: Boolean = false,
     val useRekernel: Boolean = false,
     val cancelSusfs: Boolean = false,
@@ -250,9 +325,17 @@ data class KernelBuildConfig(
     val zramFullAlgo: Boolean = false,
     val zramExtraAlgos: String = "",
     val kpmPassword: String = "",
-    val droidspaces: String = "off",
+    val virtualizationSupport: String = "off",
     val useCustomExternalModules: Boolean = false,
     val customExternalModules: List<CustomExternalModule> = emptyList()
+)
+
+data class BuildPlan(
+    val id: String = "",
+    val name: String = "",
+    val config: KernelBuildConfig = KernelBuildConfig(),
+    val createdAt: Long = 0L,
+    val updatedAt: Long = 0L
 )
 
 data class DownloadedArtifact(
@@ -266,6 +349,8 @@ data class DownloadedArtifact(
     val runNumber: Int = 0,
     val category: ArtifactCategory = type.toArtifactCategory()
 )
+
+const val PREBUILT_GKI_RUN_ID: Long = -2L
 
 enum class ArtifactType {
     KERNEL_PACKAGE,

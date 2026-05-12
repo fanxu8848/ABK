@@ -1,5 +1,13 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
+
 package com.abk.kernel.ui.screens
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
@@ -7,23 +15,34 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.abk.kernel.R
+import com.abk.kernel.data.model.BuildPlan
 import com.abk.kernel.data.model.BuildProgress
 import com.abk.kernel.data.model.BuildStepProgress
 import com.abk.kernel.data.model.BuildStatus
@@ -32,26 +51,50 @@ import com.abk.kernel.data.model.CustomExternalModuleStage
 import com.abk.kernel.data.model.KernelSupport
 import com.abk.kernel.data.model.KernelBuildConfig
 import com.abk.kernel.ui.components.ExpressiveHeroCard
+import com.abk.kernel.ui.components.ExpressiveListItem
 import com.abk.kernel.ui.components.ExpressiveSectionCard
 import com.abk.kernel.ui.components.ExpressiveStatusChip
+import com.abk.kernel.ui.components.ExpressiveSwitchItem
 import com.abk.kernel.ui.components.ExpressiveTopBar
+import com.abk.kernel.ui.theme.uiSurfaceColor
+import com.abk.kernel.viewmodel.BuildPlanImportPreview
+import com.abk.kernel.viewmodel.BuildPlanShareScope
 import com.abk.kernel.viewmodel.MainViewModel
+import coil.compose.AsyncImage
 import java.time.ZoneOffset
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.pow
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 
-@OptIn(ExperimentalMaterial3Api::class)
+private const val BUILD_PLAN_BACK_VISUAL_EXPONENT = 1.8f
+private const val BUILD_PLAN_BACK_SCALE_DELTA = 0.09f
+private const val BUILD_PLAN_BACK_SCRIM_ALPHA = 0.32f
+private const val BUILD_PLAN_PAGE_EXIT_DELAY_MS = 280L
+private val BUILD_PLAN_BACK_MAX_OFFSET = 56.dp
+private val BUILD_PLAN_BACK_MAX_CORNER = 32.dp
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun BuildScreen(vm: MainViewModel) {
+fun BuildScreen(
+    vm: MainViewModel,
+    outerPadding: PaddingValues = PaddingValues(0.dp),
+    onPlanPageVisibleChange: (Boolean) -> Unit = {}
+) {
     val state by vm.uiState.collectAsState()
+    val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val rawConfig = state.buildConfig
     val config = remember(rawConfig) { KernelSupport.normalize(rawConfig) }
     val recommended = state.recommendedBuildConfig
+    val motionScheme = MaterialTheme.motionScheme
+    val suggestedPlanName = remember(config) { vm.suggestedBuildPlanName(config) }
     val ksuBranchOptions = listOf("Stable(标准)", "Dev(开发)")
-    val droidspacesOptions = remember(config.kernelVersion) {
-        KernelSupport.droidspacesOptions(config.kernelVersion)
+    val virtualizationSupportOptions = remember(config.kernelVersion) {
+        KernelSupport.virtualizationSupportOptions(config.kernelVersion)
     }
     val subLevelOptions = remember(config.androidVersion, config.kernelVersion) {
         KernelSupport.subLevelOptions(config.androidVersion, config.kernelVersion)
@@ -66,11 +109,74 @@ fun BuildScreen(vm: MainViewModel) {
         buildTimePreview(config.buildTime)
     }
     var showConfirmDialog by remember { mutableStateOf(false) }
+    var showSavePlanDialog by remember { mutableStateOf(false) }
+    var showImportPlanDialog by remember { mutableStateOf(false) }
+    var showPlanLibraryPage by rememberSaveable { mutableStateOf(false) }
+    var planToolsExpanded by rememberSaveable { mutableStateOf(false) }
+    var planBackProgress by remember { mutableFloatStateOf(0f) }
+    val animatedPlanBackProgress by animateFloatAsState(
+        targetValue = planBackProgress.coerceIn(0f, 1f),
+        animationSpec = motionScheme.fastSpatialSpec(),
+        label = "build-plan-back-progress"
+    )
+    val visualPlanBackProgress = animatedPlanBackProgress
+        .coerceIn(0f, 1f)
+        .pow(BUILD_PLAN_BACK_VISUAL_EXPONENT)
+    val density = LocalDensity.current
+    val planBackOffsetPx = with(density) { BUILD_PLAN_BACK_MAX_OFFSET.toPx() }
+    val planBackCorner = with(density) { (BUILD_PLAN_BACK_MAX_CORNER.toPx() * visualPlanBackProgress).toDp() }
+    var savePlanName by remember { mutableStateOf("") }
+    var importPlanCode by remember { mutableStateOf("") }
+    var importPlanPreview by remember { mutableStateOf<BuildPlanImportPreview?>(null) }
+    var importPlanError by remember { mutableStateOf<String?>(null) }
+    var sharePlanTarget by remember { mutableStateOf<BuildPlan?>(null) }
+    var renamePlanTarget by remember { mutableStateOf<BuildPlan?>(null) }
+    var renamePlanName by remember { mutableStateOf("") }
+    var deletePlanTarget by remember { mutableStateOf<BuildPlan?>(null) }
     var customModuleUrl by remember { mutableStateOf("") }
     var customModuleStage by remember { mutableStateOf(CustomExternalModuleStage.AFTER_PATCH) }
 
     LaunchedEffect(config, rawConfig) {
         if (config != rawConfig) vm.updateBuildConfig(config)
+    }
+
+    fun openPlanLibraryPage() {
+        planBackProgress = 0f
+        onPlanPageVisibleChange(true)
+        showPlanLibraryPage = true
+    }
+
+    fun closePlanLibraryPage() {
+        showPlanLibraryPage = false
+    }
+
+    LaunchedEffect(showPlanLibraryPage) {
+        if (showPlanLibraryPage) {
+            onPlanPageVisibleChange(true)
+        } else {
+            delay(BUILD_PLAN_PAGE_EXIT_DELAY_MS)
+            planBackProgress = 0f
+            onPlanPageVisibleChange(false)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { onPlanPageVisibleChange(false) }
+    }
+
+    PredictiveBackHandler(enabled = showPlanLibraryPage && state.predictiveBackEnabled) { progress ->
+        try {
+            progress.collect { backEvent ->
+                planBackProgress = backEvent.progress.coerceIn(0f, 1f)
+            }
+            closePlanLibraryPage()
+        } catch (_: CancellationException) {
+            planBackProgress = 0f
+        }
+    }
+
+    BackHandler(enabled = showPlanLibraryPage && !state.predictiveBackEnabled) {
+        closePlanLibraryPage()
     }
 
     if (showConfirmDialog) {
@@ -86,7 +192,8 @@ fun BuildScreen(vm: MainViewModel) {
                     Text("补丁级别: ${config.osPatchLevel}")
                     Text("SUSFS: ${if (!config.cancelSusfs) "启用" else "禁用"} · ZRAM: ${if (config.useZram) "启用" else "禁用"} · KPM: ${if (config.useKpm) "启用" else "禁用"}")
                     Text("BBG: ${if (config.useBbg) "启用" else "禁用"} · DDK: ${if (config.useDdk) "启用" else "禁用"}")
-                    Text("Droidspaces: ${droidspacesLabel(config.droidspaces)}")
+                    Text("NTsync: ${if (config.useNtsync) "启用" else "禁用"} · 网络增强: ${if (config.useNetworking) "启用" else "禁用"}")
+                    Text("虚拟化支持: ${virtualizationSupportLabel(config.virtualizationSupport)}")
                     Text(
                         "外部模块: ${
                             if (config.useCustomExternalModules) "${config.customExternalModules.size} 个" else "未启用"
@@ -102,6 +209,95 @@ fun BuildScreen(vm: MainViewModel) {
             },
             dismissButton = {
                 TextButton(onClick = { showConfirmDialog = false }) { Text(stringResource(R.string.cancel)) }
+            }
+        )
+    }
+
+    if (showSavePlanDialog) {
+        SaveBuildPlanDialog(
+            name = savePlanName,
+            onNameChange = { savePlanName = it },
+            onDismiss = { showSavePlanDialog = false },
+            onConfirm = {
+                vm.saveCurrentBuildPlan(savePlanName)
+                showSavePlanDialog = false
+                Toast.makeText(context, "方案已保存", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
+    if (showImportPlanDialog) {
+        ImportBuildPlanDialog(
+            code = importPlanCode,
+            preview = importPlanPreview,
+            error = importPlanError,
+            onCodeChange = {
+                importPlanCode = it
+                importPlanPreview = null
+                importPlanError = null
+            },
+            onParse = {
+                runCatching { vm.parseBuildPlanCode(importPlanCode, config) }
+                    .onSuccess {
+                        importPlanPreview = it
+                        importPlanError = null
+                    }
+                    .onFailure {
+                        importPlanPreview = null
+                        importPlanError = it.message ?: "方案码解析失败"
+                    }
+            },
+            onApply = { preview ->
+                vm.importBuildPlanToCurrentConfig(preview)
+                showImportPlanDialog = false
+                Toast.makeText(context, "方案已应用", Toast.LENGTH_SHORT).show()
+            },
+            onSave = { preview ->
+                vm.importBuildPlanToLibrary(preview)
+                showImportPlanDialog = false
+                Toast.makeText(context, "方案已保存到方案库", Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = { showImportPlanDialog = false }
+        )
+    }
+
+    sharePlanTarget?.let { plan ->
+        ShareBuildPlanScopeDialog(
+            plan = plan,
+            onDismiss = { sharePlanTarget = null },
+            onShare = { scope ->
+                copyTextToClipboard(
+                    context = context,
+                    label = "ABK 构建方案",
+                    text = vm.shareBuildPlanCode(plan.config, plan.name, scope)
+                )
+                sharePlanTarget = null
+                Toast.makeText(context, "方案码已复制", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
+    renamePlanTarget?.let { plan ->
+        RenameBuildPlanDialog(
+            name = renamePlanName,
+            onNameChange = { renamePlanName = it },
+            onDismiss = { renamePlanTarget = null },
+            onConfirm = {
+                vm.renameBuildPlan(plan.id, renamePlanName)
+                renamePlanTarget = null
+                Toast.makeText(context, "方案已重命名", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
+    deletePlanTarget?.let { plan ->
+        DeleteBuildPlanDialog(
+            plan = plan,
+            onDismiss = { deletePlanTarget = null },
+            onConfirm = {
+                vm.deleteBuildPlan(plan.id)
+                deletePlanTarget = null
+                Toast.makeText(context, "方案已删除", Toast.LENGTH_SHORT).show()
             }
         )
     }
@@ -143,23 +339,55 @@ fun BuildScreen(vm: MainViewModel) {
         )
     }
 
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.surface,
-        topBar = {
-            ExpressiveTopBar(
-                title = stringResource(R.string.build_title)
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val childPageTopInset = outerPadding.calculateTopPadding()
+        val childPageBottomInset = outerPadding.calculateBottomPadding()
+        val childPageModifier = Modifier
+            .fillMaxWidth()
+            .height(maxHeight + childPageTopInset + childPageBottomInset)
+            .offset(y = -childPageTopInset)
+        Scaffold(
+            containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surface),
+            topBar = {
+                ExpressiveTopBar(
+                    title = stringResource(R.string.build_title)
+                )
+            }
+        ) { padding ->
+            Column(
+                modifier = Modifier
+                    .padding(padding)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+            BuildPlanHero(
+                config,
+                recommended,
+                state.buildStatus
             )
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            BuildPlanHero(config, recommended, state.buildStatus)
+
+            BuildPlanToolsCard(
+                plansCount = state.buildPlans.size,
+                expanded = planToolsExpanded,
+                currentSummary = buildPlanSummary(config),
+                onExpandedChange = { planToolsExpanded = it },
+                onSave = {
+                    savePlanName = suggestedPlanName
+                    showSavePlanDialog = true
+                },
+                onLibrary = ::openPlanLibraryPage,
+                onShare = {
+                    sharePlanTarget = BuildPlan(name = suggestedPlanName, config = config)
+                },
+                onImport = {
+                    importPlanCode = ""
+                    importPlanPreview = null
+                    importPlanError = null
+                    showImportPlanDialog = true
+                }
+            )
 
             AnimatedVisibility(
                 visible = state.buildStatus != BuildStatus.IDLE,
@@ -242,7 +470,6 @@ fun BuildScreen(vm: MainViewModel) {
                             Text(recommended?.revision?.let { "修订版本（推荐：$it）" } ?: "修订版本 (5.10 专用)")
                         },
                         placeholder = { Text("如: r11") },
-                        shape = FieldShape(),
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -279,6 +506,12 @@ fun BuildScreen(vm: MainViewModel) {
                 SwitchRow("启用 DDK 防格机 LSM", config.useDdk) {
                     vm.updateBuildConfig(config.copy(useDdk = it))
                 }
+                SwitchRow("启用 NTsync 补丁", config.useNtsync) {
+                    vm.updateBuildConfig(config.copy(useNtsync = it))
+                }
+                SwitchRow("启用网络增强 (IPSet + BBR)", config.useNetworking) {
+                    vm.updateBuildConfig(config.copy(useNetworking = it))
+                }
                 SwitchRow("启用 KPM 功能", config.useKpm) {
                     vm.updateBuildConfig(config.copy(useKpm = it))
                 }
@@ -286,10 +519,10 @@ fun BuildScreen(vm: MainViewModel) {
                     vm.updateBuildConfig(config.copy(useRekernel = it))
                 }
                 DropdownField(
-                    label = "Droidspaces 容器支持",
-                    value = config.droidspaces,
-                    options = droidspacesOptions,
-                    onSelect = { vm.updateBuildConfig(config.copy(droidspaces = it)) }
+                    label = "虚拟化支持",
+                    value = config.virtualizationSupport,
+                    options = virtualizationSupportOptions,
+                    onSelect = { vm.updateBuildConfig(config.copy(virtualizationSupport = it)) }
                 )
                 SwitchRow("启用一加 8E 支持", config.suppOp) {
                     vm.updateBuildConfig(config.copy(suppOp = it))
@@ -308,7 +541,6 @@ fun BuildScreen(vm: MainViewModel) {
                             onValueChange = { vm.updateBuildConfig(config.copy(zramExtraAlgos = it)) },
                             label = { Text("自定义 ZRAM 算法") },
                             placeholder = { Text("如: lzo,lz4,deflate,zstd") },
-                            shape = FieldShape(),
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
@@ -324,7 +556,6 @@ fun BuildScreen(vm: MainViewModel) {
                         onValueChange = { vm.updateBuildConfig(config.copy(kpmPassword = it)) },
                         label = { Text("KPM 超级密码 (可选)") },
                         placeholder = { Text("留空使用默认密码") },
-                        shape = FieldShape(),
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -343,7 +574,6 @@ fun BuildScreen(vm: MainViewModel) {
                             onValueChange = { customModuleUrl = it },
                             label = { Text("仓库链接") },
                             placeholder = { Text("https://github.com/user/module") },
-                            shape = FieldShape(),
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
@@ -369,7 +599,6 @@ fun BuildScreen(vm: MainViewModel) {
                                 }
                             },
                             enabled = customModuleUrl.isNotBlank(),
-                            shape = FieldShape(),
                             modifier = Modifier.fillMaxWidth().height(48.dp)
                         ) {
                             Icon(Icons.Default.Add, null)
@@ -378,33 +607,11 @@ fun BuildScreen(vm: MainViewModel) {
                         }
 
                         config.customExternalModules.forEachIndexed { index, module ->
-                            Surface(
-                                shape = RoundedCornerShape(18.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Column(
-                                        modifier = Modifier.weight(1f),
-                                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                                    ) {
-                                        Text(
-                                            CustomExternalModuleStage.normalize(module.stage),
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
-                                        Text(
-                                            module.url,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
+                            ExpressiveListItem(
+                                title = CustomExternalModuleStage.normalize(module.stage),
+                                subtitle = module.url,
+                                leadingIcon = Icons.Default.Extension,
+                                trailingContent = {
                                     IconButton(
                                         onClick = {
                                             vm.updateBuildConfig(
@@ -412,13 +619,13 @@ fun BuildScreen(vm: MainViewModel) {
                                                     customExternalModules = config.customExternalModules
                                                         .filterIndexed { i, _ -> i != index }
                                                 )
-                                            )
-                                        }
-                                    ) {
-                                        Icon(Icons.Default.Delete, null)
-                                    }
+                                    )
                                 }
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "删除模块")
                             }
+                        }
+                            )
                         }
                     }
                 }
@@ -430,7 +637,6 @@ fun BuildScreen(vm: MainViewModel) {
                     value = config.version,
                     onValueChange = { vm.updateBuildConfig(config.copy(version = it)) },
                     label = { Text("自定义版本名 (可选)") },
-                    shape = FieldShape(),
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
@@ -440,7 +646,6 @@ fun BuildScreen(vm: MainViewModel) {
                     onValueChange = { vm.updateBuildConfig(config.copy(buildTime = it)) },
                     label = { Text("自定义构建时间 (可选)") },
                     placeholder = { Text("留空/N=当前 UTC 时间") },
-                    shape = FieldShape(),
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
@@ -453,18 +658,10 @@ fun BuildScreen(vm: MainViewModel) {
                 enabled = !state.isLoading && state.buildStatus !in listOf(
                     BuildStatus.QUEUED, BuildStatus.IN_PROGRESS
                 ),
-                shape = RoundedCornerShape(30.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                ),
-                modifier = Modifier.fillMaxWidth().height(64.dp)
+                modifier = Modifier.fillMaxWidth().height(52.dp)
             ) {
                 if (state.isLoading) {
-                    CircularProgressIndicator(
-                        Modifier.size(20.dp), strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
+                    LoadingIndicator(Modifier.size(24.dp))
                 } else {
                     Icon(Icons.Default.RocketLaunch, null)
                     Spacer(Modifier.width(8.dp))
@@ -475,7 +672,6 @@ fun BuildScreen(vm: MainViewModel) {
             // Error
             state.error?.let { err ->
                 Card(
-                    shape = MaterialTheme.shapes.large,
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
                 ) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -483,44 +679,551 @@ fun BuildScreen(vm: MainViewModel) {
                         Spacer(Modifier.width(8.dp))
                         Text(err, color = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.weight(1f))
                         IconButton(onClick = { vm.clearError() }) {
-                            Icon(Icons.Default.Close, null, tint = MaterialTheme.colorScheme.error)
+                            Icon(Icons.Default.Close, contentDescription = "关闭错误提示", tint = MaterialTheme.colorScheme.error)
                         }
                     }
                 }
             }
 
             Spacer(Modifier.height(80.dp))
+            }
+        }
+
+        AnimatedVisibility(
+            visible = showPlanLibraryPage,
+            enter = fadeIn(animationSpec = motionScheme.defaultEffectsSpec()),
+            exit = fadeOut(animationSpec = motionScheme.fastEffectsSpec()),
+            modifier = childPageModifier
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = BUILD_PLAN_BACK_SCRIM_ALPHA * visualPlanBackProgress))
+            )
+        }
+
+        AnimatedVisibility(
+            visible = showPlanLibraryPage,
+            enter = fadeIn(animationSpec = motionScheme.defaultEffectsSpec()) +
+                slideInHorizontally(animationSpec = motionScheme.defaultSpatialSpec()) { width -> width / 4 },
+            exit = fadeOut(animationSpec = motionScheme.fastEffectsSpec()) +
+                slideOutHorizontally(animationSpec = motionScheme.fastSpatialSpec()) { width -> width },
+            modifier = childPageModifier
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        translationX = planBackOffsetPx * visualPlanBackProgress
+                        scaleX = 1f - BUILD_PLAN_BACK_SCALE_DELTA * visualPlanBackProgress
+                        scaleY = 1f - BUILD_PLAN_BACK_SCALE_DELTA * visualPlanBackProgress
+                        alpha = 1f - 0.06f * visualPlanBackProgress
+                        shape = RoundedCornerShape(planBackCorner)
+                        clip = visualPlanBackProgress > 0.01f
+                    }
+            ) {
+                BuildPlanPageBackground(
+                    backgroundUri = state.customBackgroundUri,
+                    backgroundImageEnabled = state.backgroundImageEnabled
+                )
+                Scaffold(
+                    containerColor = Color.Transparent,
+                    topBar = {
+                        ExpressiveTopBar(
+                            title = "方案库",
+                            navigationIcon = {
+                                IconButton(onClick = ::closePlanLibraryPage) {
+                                    Icon(Icons.Default.ArrowBack, contentDescription = "返回构建配置")
+                                }
+                            }
+                        )
+                    }
+                ) { padding ->
+                    BuildPlanLibraryPage(
+                        plans = state.buildPlans,
+                        onApply = {
+                            vm.applyBuildPlan(it)
+                            closePlanLibraryPage()
+                            Toast.makeText(context, "方案已应用，可继续修改", Toast.LENGTH_SHORT).show()
+                        },
+                        onShare = { sharePlanTarget = it },
+                        onRename = {
+                            renamePlanTarget = it
+                            renamePlanName = it.name
+                        },
+                        onDelete = { deletePlanTarget = it },
+                        modifier = Modifier
+                            .padding(padding)
+                            .fillMaxSize()
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun ConfigPreviewText(preview: String) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)
+private fun BuildPlanPageBackground(
+    backgroundUri: String?,
+    backgroundImageEnabled: Boolean
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val hasBackground = backgroundImageEnabled && !backgroundUri.isNullOrBlank()
+    val scrimColor = if (colorScheme.surface.luminance() > 0.5f) {
+        colorScheme.surface.copy(alpha = 0.28f)
+    } else {
+        Color.Black.copy(alpha = 0.38f)
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(colorScheme.surface)
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Icon(
-                Icons.Default.Visibility,
-                null,
-                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                modifier = Modifier.size(17.dp)
+        if (hasBackground) {
+            AsyncImage(
+                model = backgroundUri,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
             )
-            Text(
-                preview,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(scrimColor)
             )
         }
     }
+}
+
+@Composable
+private fun BuildPlanToolsCard(
+    plansCount: Int,
+    expanded: Boolean,
+    currentSummary: String,
+    onExpandedChange: (Boolean) -> Unit,
+    onSave: () -> Unit,
+    onLibrary: () -> Unit,
+    onShare: () -> Unit,
+    onImport: () -> Unit
+) {
+    ExpressiveSectionCard(
+        title = "构建方案",
+        subtitle = "保存、分享或导入当前构建配置。",
+        icon = Icons.Default.FolderOpen
+    ) {
+        Column(
+            modifier = Modifier.animateContentSize(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = currentSummary,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = if (expanded) 3 else 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                IconButton(onClick = { onExpandedChange(!expanded) }) {
+                    Icon(
+                        imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = if (expanded) "收起构建方案" else "展开构建方案"
+                    )
+                }
+            }
+            AnimatedVisibility(
+                visible = expanded,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = onSave,
+                            modifier = Modifier.weight(1f).height(44.dp)
+                        ) {
+                            Icon(Icons.Default.Add, null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("保存")
+                        }
+                        OutlinedButton(
+                            onClick = onLibrary,
+                            modifier = Modifier.weight(1f).height(44.dp)
+                        ) {
+                            Icon(Icons.Default.FolderOpen, null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("方案库")
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = onShare,
+                            modifier = Modifier.weight(1f).height(44.dp)
+                        ) {
+                            Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("分享")
+                        }
+                        OutlinedButton(
+                            onClick = onImport,
+                            modifier = Modifier.weight(1f).height(44.dp)
+                        ) {
+                            Icon(Icons.Default.Download, null, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("导入")
+                        }
+                    }
+                    Text(
+                        text = if (plansCount > 0) "已保存 $plansCount 个方案" else "暂无已保存方案",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SaveBuildPlanDialog(
+    name: String,
+    onNameChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Add, null) },
+        title = { Text("保存方案") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = onNameChange,
+                label = { Text("方案名称") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.cancel))
+            }
+        }
+    )
+}
+
+@Composable
+private fun ImportBuildPlanDialog(
+    code: String,
+    preview: BuildPlanImportPreview?,
+    error: String?,
+    onCodeChange: (String) -> Unit,
+    onParse: () -> Unit,
+    onApply: (BuildPlanImportPreview) -> Unit,
+    onSave: (BuildPlanImportPreview) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Download, null) },
+        title = { Text("导入方案") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = onCodeChange,
+                    label = { Text("ABKP2 方案码") },
+                    placeholder = { Text("粘贴 ABKP2: 开头的方案码") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 3,
+                    maxLines = 5
+                )
+                error?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                preview?.let {
+                    ExpressiveListItem(
+                        title = it.plan.name,
+                        subtitle = "${buildPlanScopeLabel(it.scope)}\n${buildPlanSummary(it.plan.config)}",
+                        leadingIcon = Icons.Default.CheckCircle,
+                        selected = true
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (preview == null) {
+                Button(
+                    onClick = onParse,
+                    enabled = code.isNotBlank()
+                ) {
+                    Text("解析")
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { onSave(preview) }) {
+                        Text("保存")
+                    }
+                    Button(onClick = { onApply(preview) }) {
+                        Text("应用")
+                    }
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.cancel))
+            }
+        }
+    )
+}
+
+@Composable
+private fun ShareBuildPlanScopeDialog(
+    plan: BuildPlan,
+    onDismiss: () -> Unit,
+    onShare: (BuildPlanShareScope) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Share, null) },
+        title = { Text("分享方案") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ExpressiveListItem(
+                    title = plan.name.ifBlank { "当前方案" },
+                    subtitle = buildPlanSummary(plan.config),
+                    leadingIcon = Icons.Default.FolderOpen
+                )
+                Text(
+                    text = "完整方案会包含 Android、内核版本、补丁级别和功能设置；仅功能设置会在导入时保留当前页面的内核版本数据。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onShare(BuildPlanShareScope.FULL) }) {
+                Text("完整方案")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { onShare(BuildPlanShareScope.FEATURES_ONLY) }) {
+                Text("仅功能设置")
+            }
+        }
+    )
+}
+
+@Composable
+private fun BuildPlanLibraryPage(
+    plans: List<BuildPlan>,
+    onApply: (BuildPlan) -> Unit,
+    onShare: (BuildPlan) -> Unit,
+    onRename: (BuildPlan) -> Unit,
+    onDelete: (BuildPlan) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        if (plans.isEmpty()) {
+            ExpressiveSectionCard(
+                title = "暂无方案",
+                subtitle = "先把当前构建配置保存为方案。",
+                icon = Icons.Default.FolderOpen
+            ) {
+                Text(
+                    text = "保存后可以在这里应用、分享、改名或删除。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            plans.forEach { plan ->
+                BuildPlanLibraryItem(
+                    plan = plan,
+                    onApply = { onApply(plan) },
+                    onShare = { onShare(plan) },
+                    onRename = { onRename(plan) },
+                    onDelete = { onDelete(plan) }
+                )
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun BuildPlanLibraryItem(
+    plan: BuildPlan,
+    onApply: () -> Unit,
+    onShare: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit
+) {
+    ExpressiveSectionCard(
+        title = plan.name,
+        subtitle = buildPlanSummary(plan.config),
+        icon = Icons.Default.FolderOpen
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onApply,
+                modifier = Modifier.weight(1f).height(42.dp)
+            ) {
+                Icon(Icons.Default.Edit, null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("应用/编辑")
+            }
+            OutlinedButton(
+                onClick = onShare,
+                modifier = Modifier.weight(1f).height(42.dp)
+            ) {
+                Icon(Icons.Default.Share, null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("分享")
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = onRename,
+                modifier = Modifier.weight(1f).height(42.dp)
+            ) {
+                Icon(Icons.Default.Edit, null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("改名")
+            }
+            OutlinedButton(
+                onClick = onDelete,
+                modifier = Modifier.weight(1f).height(42.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+            ) {
+                Icon(Icons.Default.Delete, null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("删除")
+            }
+        }
+    }
+}
+
+@Composable
+private fun RenameBuildPlanDialog(
+    name: String,
+    onNameChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Edit, null) },
+        title = { Text("重命名方案") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = onNameChange,
+                label = { Text("方案名称") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.cancel))
+            }
+        }
+    )
+}
+
+@Composable
+private fun DeleteBuildPlanDialog(
+    plan: BuildPlan,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Delete, null) },
+        title = { Text("删除方案") },
+        text = { Text("确定删除“${plan.name}”？此操作不会影响当前构建配置。") },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
+                )
+            ) {
+                Text("删除")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.cancel))
+            }
+        }
+    )
+}
+
+@Composable
+private fun ConfigPreviewText(preview: String) {
+    ExpressiveListItem(
+        title = "配置预览",
+        subtitle = preview,
+        leadingIcon = Icons.Default.Visibility,
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+
+private fun copyTextToClipboard(context: Context, label: String, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+}
+
+private fun buildPlanSummary(config: KernelBuildConfig): String {
+    val android = config.androidVersion.removePrefix("android").ifBlank { config.androidVersion }
+    val enabled = mutableListOf<String>()
+    if (!config.cancelSusfs) enabled += "SUSFS"
+    if (config.useZram) enabled += "ZRAM"
+    if (config.useBbg) enabled += "BBG"
+    if (config.useDdk) enabled += "DDK"
+    if (config.useNtsync) enabled += "NTsync"
+    if (config.useNetworking) enabled += "网络增强"
+    if (config.useKpm) enabled += "KPM"
+    if (config.useRekernel) enabled += "Re-Kernel"
+    if (config.virtualizationSupport != "off") {
+        enabled += "虚拟化 ${virtualizationSupportLabel(config.virtualizationSupport)}"
+    }
+    val featureSummary = enabled.ifEmpty { listOf("基础配置") }.joinToString("、")
+    val externalModuleCount = if (config.useCustomExternalModules) config.customExternalModules.size else 0
+    return "${config.kernelVersion}.${config.subLevel} · Android $android · ${config.osPatchLevel}\n" +
+        "${config.kernelsuVariant} / ${config.kernelsuBranch} · $featureSummary · 外部模块 $externalModuleCount"
+}
+
+private fun buildPlanScopeLabel(scope: BuildPlanShareScope): String = when (scope) {
+    BuildPlanShareScope.FULL -> "完整方案"
+    BuildPlanShareScope.FEATURES_ONLY -> "仅功能设置"
 }
 
 @Composable
@@ -552,10 +1255,24 @@ private fun BuildPlanHero(
                 icon = Icons.Default.Extension,
                 color = if (!config.cancelSusfs) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outline
             )
-            if (config.droidspaces != "off") {
+            if (config.virtualizationSupport != "off") {
                 ExpressiveStatusChip(
-                    label = "Droidspaces ${droidspacesLabel(config.droidspaces)}",
+                    label = "虚拟化支持 ${virtualizationSupportLabel(config.virtualizationSupport)}",
                     icon = Icons.Default.Extension,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+            if (config.useNtsync) {
+                ExpressiveStatusChip(
+                    label = "NTsync",
+                    icon = Icons.Default.Sync,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+            if (config.useNetworking) {
+                ExpressiveStatusChip(
+                    label = "网络增强",
+                    icon = Icons.Default.Language,
                     color = MaterialTheme.colorScheme.secondary
                 )
             }
@@ -568,7 +1285,7 @@ private fun BuildPlanHero(
     )
 }
 
-private fun droidspacesLabel(value: String): String = when (value) {
+private fun virtualizationSupportLabel(value: String): String = when (value) {
     "off" -> "关闭"
     "on" -> "开启"
     "678" -> "槽位 6/7/8"
@@ -610,9 +1327,10 @@ private fun BuildStatusBanner(status: BuildStatus, progress: BuildProgress) {
         else -> return
     }
     Card(
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(containerColor = color.copy(alpha = 0.13f)),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)
+        )
     ) {
         Row(
             Modifier.padding(12.dp),
@@ -620,7 +1338,7 @@ private fun BuildStatusBanner(status: BuildStatus, progress: BuildProgress) {
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             if (status == BuildStatus.IN_PROGRESS) {
-                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = color)
+                LoadingIndicator(Modifier.size(24.dp))
             } else {
                 Icon(icon, null, tint = color, modifier = Modifier.size(20.dp))
             }
@@ -643,13 +1361,14 @@ private fun BuildStatusBanner(status: BuildStatus, progress: BuildProgress) {
 private fun BuildProgressCard(progress: BuildProgress) {
     val animatedProgress by animateFloatAsState(
         targetValue = (progress.percent / 100f).coerceIn(0f, 1f),
+        animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
         label = "build-progress"
     )
     Card(
         modifier = Modifier.fillMaxWidth().animateContentSize(),
-        shape = MaterialTheme.shapes.extraLarge,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+        colors = CardDefaults.cardColors(
+            containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)
+        )
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
@@ -752,32 +1471,12 @@ private fun buildStatusLabel(status: BuildStatus): String = when (status) {
 }
 
 @Composable
-private fun FieldShape() = RoundedCornerShape(20.dp)
-
-@Composable
 fun SwitchRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Surface(
-        shape = RoundedCornerShape(24.dp),
-        color = if (checked) {
-            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
-        } else {
-            MaterialTheme.colorScheme.surface.copy(alpha = 0.78f)
-        }
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                label,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (checked) FontWeight.Bold else FontWeight.Normal,
-                modifier = Modifier.weight(1f)
-            )
-            Switch(checked = checked, onCheckedChange = onCheckedChange)
-        }
-    }
+    ExpressiveSwitchItem(
+        title = label,
+        checked = checked,
+        onCheckedChange = onCheckedChange
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -797,10 +1496,9 @@ fun DropdownField(
             readOnly = true,
             label = { Text(label) },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
-            shape = FieldShape(),
             modifier = Modifier
                 .fillMaxWidth()
-                .menuAnchor()
+                .menuAnchor(),
         )
         ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             options.forEach { opt ->

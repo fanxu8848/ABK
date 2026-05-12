@@ -12,6 +12,7 @@ on:
         required: true
         type: choice
         options:
+          - None
           - Official
           #- Next
           - SukiSU
@@ -35,8 +36,8 @@ on:
         required: false
         type: string
         default: "Sun Dec 01 08:10:00 UTC 2024"
-      droidspaces:
-        description: "Droidspaces 容器支持"
+      virtualization_support:
+        description: "虚拟化支持"
         required: false
         type: choice
         options:
@@ -58,6 +59,16 @@ on:
       use_ddk:
         description: "启用 DDK 防格机 LSM"
         required: true
+        type: boolean
+        default: false
+      use_ntsync:
+        description: "启用 NTsync"
+        required: false
+        type: boolean
+        default: false
+      use_networking:
+        description: "启用网络增强（IPSet + BBR）"
+        required: false
         type: boolean
         default: false
       use_kpm:
@@ -120,6 +131,14 @@ on:
         required: false
         type: boolean
         default: false
+      use_ntsync:
+        required: false
+        type: boolean
+        default: false
+      use_networking:
+        required: false
+        type: boolean
+        default: false
       use_kpm:
         required: true
         type: boolean
@@ -134,7 +153,7 @@ on:
       supp_op:
         required: false
         type: boolean
-      droidspaces:
+      virtualization_support:
         required: false
         type: string
         default: "off"
@@ -207,14 +226,17 @@ jobs:
       use_zram: ${{ inputs.use_zram }}
       use_bbg: ${{ inputs.use_bbg }}
       use_ddk: ${{ inputs.use_ddk }}
+      use_ntsync: ${{ inputs.use_ntsync || false }}
+      use_networking: ${{ inputs.use_networking || false }}
       use_kpm: ${{ inputs.use_kpm }}
       use_rekernel: ${{ inputs.use_rekernel || false }}
       supp_op: ${{ inputs.supp_op || false }}
       enable_susfs: ${{ !inputs.cancel_susfs }}
-      droidspaces: ${{ inputs.droidspaces || 'off' }}
+      virtualization_support: ${{ inputs.virtualization_support || 'off' }}
       zram_full_algo: ${{ inputs.zram_full_algo || false }}
       zram_extra_algos: ${{ inputs.zram_extra_algos || '' }}
       kpm_password: ${{ inputs.kpm_password || '' }}
+      upload_aux_artifacts: false
 
   # 仅在直接触发时运行，从 main.yml 调用时跳过
   get-ksu-manager:

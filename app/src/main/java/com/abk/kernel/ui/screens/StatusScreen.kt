@@ -5,8 +5,8 @@ import android.net.Uri
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -14,9 +14,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.abk.kernel.BuildConfig
@@ -27,10 +30,11 @@ import com.abk.kernel.ui.components.ExpressiveHeroCard
 import com.abk.kernel.ui.components.ExpressiveSectionCard
 import com.abk.kernel.ui.components.ExpressiveStatusChip
 import com.abk.kernel.ui.components.ExpressiveTopBar
+import com.abk.kernel.ui.theme.uiSurfaceColor
 import com.abk.kernel.utils.RootUtils
 import com.abk.kernel.viewmodel.MainViewModel
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun StatusScreen(vm: MainViewModel) {
     val state by vm.uiState.collectAsState()
@@ -39,7 +43,7 @@ fun StatusScreen(vm: MainViewModel) {
     LaunchedEffect(Unit) { vm.loadRecentRuns() }
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surface),
         topBar = {
             ExpressiveTopBar(
                 title = stringResource(R.string.app_name)
@@ -88,11 +92,10 @@ fun StatusScreen(vm: MainViewModel) {
                     OutlinedButton(
                         onClick = { vm.requestRoot() },
                         enabled = !state.isLoading,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(18.dp)
+                        modifier = Modifier.fillMaxWidth()
                     ) {
                         if (state.isLoading) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            LoadingIndicator(Modifier.size(24.dp))
                         } else {
                             Icon(Icons.Default.Lock, null, modifier = Modifier.size(17.dp))
                             Spacer(Modifier.width(6.dp))
@@ -119,7 +122,7 @@ fun StatusScreen(vm: MainViewModel) {
                     BuildStatus.IDLE -> StatusRow(Icons.Default.HourglassEmpty, "暂无进行中的构建", false)
                     BuildStatus.QUEUED -> StatusRow(Icons.Default.Queue, "构建已排队，等待 Runner…", false)
                     BuildStatus.IN_PROGRESS -> Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        LoadingIndicator(Modifier.size(24.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("${state.buildProgress.percent}% · ${state.buildProgress.currentStep}")
                     }
@@ -131,6 +134,7 @@ fun StatusScreen(vm: MainViewModel) {
                     Spacer(Modifier.height(8.dp))
                     val animatedProgress by animateFloatAsState(
                         targetValue = (state.buildProgress.percent / 100f).coerceIn(0f, 1f),
+                        animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
                         label = "status-progress"
                     )
                     LinearProgressIndicator(
@@ -167,26 +171,30 @@ fun StatusScreen(vm: MainViewModel) {
                 subtitle = "用于生成默认构建参数和确认工作流来源。",
                 icon = Icons.Default.Memory
             ) {
-                StatusRow(Icons.Default.Memory, "内核: $kernelVersion", false)
-                StatusRow(Icons.Default.Shield, "KSU: $ksuVersion", ksuVersion == "N/A")
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DeviceInfoRow(
+                        icon = Icons.Default.Memory,
+                        label = "内核",
+                        value = kernelVersion,
+                        isError = false
+                    )
+                    DeviceInfoRow(
+                        icon = Icons.Default.Shield,
+                        label = "KSU",
+                        value = ksuVersion,
+                        isError = ksuVersion == "N/A"
+                    )
+                }
                 state.user?.let { user ->
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        AsyncImage(
-                            model = user.avatarUrl,
-                            contentDescription = null,
-                            modifier = Modifier.size(42.dp)
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(user.login, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            Text(
-                                state.forkRepo?.fullName ?: stringResource(R.string.status_no_fork),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 6.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
+                    )
+                    AccountRepositoryRow(
+                        avatarUrl = user.avatarUrl,
+                        login = user.login,
+                        repository = state.forkRepo?.fullName ?: stringResource(R.string.status_no_fork)
+                    )
                 }
                 if (state.behindBy > 0) {
                     StatusRow(Icons.Default.Warning, "Fork 落后上游 ${state.behindBy} 个提交", true)
@@ -203,14 +211,91 @@ fun StatusScreen(vm: MainViewModel) {
                         val visibleRuns = state.recentRuns.take(5)
                         visibleRuns.forEachIndexed { index, run ->
                             RunListItem(run)
-                            if (index != visibleRuns.lastIndex) {
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                            }
                         }
                     }
                 }
             }
             Spacer(Modifier.height(80.dp))
+        }
+    }
+}
+
+@Composable
+private fun DeviceInfoRow(
+    icon: ImageVector,
+    label: String,
+    value: String,
+    isError: Boolean
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .padding(top = 2.dp)
+                .size(18.dp)
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun AccountRepositoryRow(
+    avatarUrl: String,
+    login: String,
+    repository: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        AsyncImage(
+            model = avatarUrl,
+            contentDescription = null,
+            modifier = Modifier
+                .size(38.dp)
+                .clip(CircleShape)
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(1.dp)
+        ) {
+            Text(
+                text = login,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = repository,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -226,14 +311,14 @@ private fun StatusMetricGrid(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             StatusMetricCard(
                 label = "Root",
-                value = if (rootGranted) "Granted" else "Partial",
+                value = if (rootGranted) "已授权" else "部分激活",
                 icon = if (rootGranted) Icons.Default.Lock else Icons.Default.LockOpen,
                 color = if (rootGranted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
                 modifier = Modifier.weight(1f)
             )
             StatusMetricCard(
                 label = "Fork",
-                value = if (forkReady) "Synced" else "Check",
+                value = if (forkReady) "已同步" else "待检查",
                 icon = Icons.Default.ForkRight,
                 color = if (forkReady) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.tertiary,
                 modifier = Modifier.weight(1f)
@@ -242,7 +327,7 @@ private fun StatusMetricGrid(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
             StatusMetricCard(
                 label = "KernelSU",
-                value = if (ksuVersion == "N/A") "Missing" else "Detected",
+                value = if (ksuVersion == "N/A") "未检测" else "已检测",
                 icon = Icons.Default.Shield,
                 color = if (ksuVersion == "N/A") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                 modifier = Modifier.weight(1f)
@@ -266,18 +351,21 @@ private fun StatusMetricCard(
     color: androidx.compose.ui.graphics.Color,
     modifier: Modifier = Modifier
 ) {
-    val animatedColor by animateColorAsState(color, label = "metric-color")
+    val animatedColor by animateColorAsState(
+        color,
+        animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
+        label = "metric-color"
+    )
     Card(
         modifier = modifier,
-        shape = RoundedCornerShape(28.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        colors = CardDefaults.cardColors(containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surfaceContainer)),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Icon(icon, null, tint = animatedColor, modifier = Modifier.size(26.dp))
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(icon, null, tint = animatedColor, modifier = Modifier.size(22.dp))
             Column {
-                Text(label, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
-                Text(value, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+                Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
@@ -331,12 +419,12 @@ private fun RunListItem(run: WorkflowRun) {
 }
 
 private fun buildStatusDisplay(status: BuildStatus): String = when (status) {
-    BuildStatus.IDLE -> "Idle"
-    BuildStatus.QUEUED -> "Queued"
-    BuildStatus.IN_PROGRESS -> "Running"
-    BuildStatus.SUCCESS -> "Success"
-    BuildStatus.FAILURE -> "Failed"
-    BuildStatus.CANCELLED -> "Stopped"
+    BuildStatus.IDLE -> "空闲"
+    BuildStatus.QUEUED -> "排队"
+    BuildStatus.IN_PROGRESS -> "进行中"
+    BuildStatus.SUCCESS -> "成功"
+    BuildStatus.FAILURE -> "失败"
+    BuildStatus.CANCELLED -> "已停止"
 }
 
 @Composable

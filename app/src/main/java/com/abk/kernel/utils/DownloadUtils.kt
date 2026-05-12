@@ -1,16 +1,14 @@
 package com.abk.kernel.utils
 
-import android.content.ActivityNotFoundException
-import android.content.ClipData
 import android.content.Context
-import android.content.Intent
 import android.os.Environment
-import androidx.core.content.FileProvider
 import com.abk.kernel.data.model.Artifact
 import com.abk.kernel.data.model.ArtifactCategory
 import com.abk.kernel.data.model.ArtifactType
 import com.abk.kernel.data.model.BuildArtifact
 import com.abk.kernel.data.model.DownloadedArtifact
+import com.abk.kernel.data.model.PREBUILT_GKI_RUN_ID
+import com.abk.kernel.data.model.PrebuiltGkiAsset
 import com.abk.kernel.data.model.WorkflowRun
 import com.abk.kernel.data.model.toArtifact
 import com.abk.kernel.data.model.toArtifactCategory
@@ -33,7 +31,7 @@ object DownloadUtils {
         return when {
             lower.contains("reject") || lower.contains("-rej") -> ArtifactType.OTHER
             lower.contains("_kernel-android") || lower.contains("kernel-android") -> ArtifactType.KERNEL_PACKAGE
-            lower.endsWith(".img") && (lower.contains("boot") || lower.contains("kernel")) -> ArtifactType.KERNEL_IMG
+            lower.endsWith(".img") && (lower.contains("boot") || lower.contains("kernel") || lower.contains("gki")) -> ArtifactType.KERNEL_IMG
             lower.contains("boot-img") || lower.contains("boot_img") || lower.contains("kernel-img") -> ArtifactType.KERNEL_IMG
             lower.contains("anykernel") || lower.contains("ak3") -> ArtifactType.ANYKERNEL3
             lower.endsWith(".zip") && isLikelyModuleZipName(lower) -> ArtifactType.SUSFS_MODULE
@@ -87,7 +85,13 @@ object DownloadUtils {
         downloaded.runId == artifact.runId &&
             downloaded.filePath.contains("/${artifactStorageFolderName(artifact.name)}/")
 
+    fun matchesDownloadedPrebuilt(downloaded: DownloadedArtifact, asset: PrebuiltGkiAsset): Boolean =
+        downloaded.runId == PREBUILT_GKI_RUN_ID &&
+            downloaded.filePath.contains("/prebuilt-gki/${artifactStorageFolderName(asset.name)}/")
+
     fun artifactStorageFolderName(name: String): String = safeFileName(name)
+
+    fun prebuiltProgressKey(assetId: Long): Long = -(assetId.coerceAtLeast(1L) + 1_000_000_000L)
 
     private fun isLikelySupportedManager(name: String): Boolean {
         val abi = android.os.Build.SUPPORTED_ABIS.joinToString(" ").lowercase(Locale.ROOT)
@@ -164,6 +168,89 @@ object DownloadUtils {
                     runId = run?.id ?: -1L,
                     runTitle = run?.displayTitle ?: run?.name ?: run?.let { "#${it.runNumber}" } ?: "未关联工作流",
                     runNumber = run?.runNumber ?: 0,
+                    category = type.toArtifactCategory()
+                )
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun downloadDirectAsset(
+        context: Context,
+        token: String?,
+        url: String,
+        name: String,
+        sizeBytes: Long,
+        runId: Long,
+        runTitle: String,
+        onProgress: (Int) -> Unit = {}
+    ): List<DownloadedArtifact> = withContext(Dispatchers.IO) {
+        try {
+            val request = Request.Builder()
+                .url(url)
+                .header("Accept", "application/octet-stream")
+                .apply {
+                    if (!token.isNullOrBlank()) {
+                        header("Authorization", "Bearer $token")
+                    }
+                }
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (!response.isSuccessful) return@withContext emptyList()
+
+            val body = response.body ?: return@withContext emptyList()
+            val totalBytes = when {
+                sizeBytes > 0L -> sizeBytes
+                body.contentLength() > 0L -> body.contentLength()
+                else -> 1L
+            }
+
+            val downloadsRoot = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: context.filesDir
+            val assetDir = File(downloadsRoot, "prebuilt-gki/${safeFileName(name)}").apply {
+                if (exists()) deleteRecursively()
+                mkdirs()
+            }
+            val file = File(assetDir, safeFileName(name))
+
+            body.byteStream().use { input ->
+                FileOutputStream(file).use { output ->
+                    val buffer = ByteArray(8 * 1024)
+                    var downloaded = 0L
+                    var bytes: Int
+                    while (input.read(buffer).also { bytes = it } != -1) {
+                        output.write(buffer, 0, bytes)
+                        downloaded += bytes
+                        val pct = (downloaded * 100 / totalBytes).toInt().coerceIn(0, 100)
+                        onProgress(pct)
+                    }
+                }
+            }
+
+            val byName = classifyDownloadedFile(file)
+            val files = if (file.extension.equals("zip", ignoreCase = true) && byName in setOf(ArtifactType.KERNEL_PACKAGE, ArtifactType.OTHER)) {
+                val outDir = File(assetDir, "extracted")
+                outDir.mkdirs()
+                unzip(file, outDir)
+                file.delete()
+                collectCandidateFiles(outDir)
+            } else {
+                listOf(file)
+            }
+
+            files.mapIndexed { index, candidate ->
+                val type = classifyDownloadedFile(candidate)
+                DownloadedArtifact(
+                    id = runId * 1000 + index.toLong() + 1L,
+                    name = candidate.name,
+                    filePath = candidate.absolutePath,
+                    type = type,
+                    sizeBytes = candidate.length(),
+                    runId = runId,
+                    runTitle = runTitle,
+                    runNumber = 0,
                     category = type.toArtifactCategory()
                 )
             }
@@ -254,49 +341,6 @@ object DownloadUtils {
             }
         }.getOrDefault(ArtifactType.OTHER)
     }
-
-    fun installApk(context: Context, filePath: String): Boolean {
-        val file = File(filePath)
-        if (!file.exists()) return false
-        return runCatching {
-            val uri = FileProvider.getUriForFile(
-                context, "${context.packageName}.fileprovider", file
-            )
-            val viewIntent = buildViewIntent(context, uri, "application/vnd.android.package-archive", file.name)
-            val installIntent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
-                data = uri
-                clipData = ClipData.newUri(context.contentResolver, file.name, uri)
-                putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            context.startActivitySafely(viewIntent) || context.startActivitySafely(installIntent)
-        }.getOrDefault(false)
-    }
-
-    private fun Context.startActivitySafely(intent: Intent): Boolean {
-        return try {
-            startActivity(intent)
-            true
-        } catch (_: ActivityNotFoundException) {
-            false
-        } catch (_: SecurityException) {
-            false
-        }
-    }
-
-    private fun buildViewIntent(
-        context: Context,
-        uri: android.net.Uri,
-        mimeType: String,
-        label: String
-    ): Intent =
-        Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, mimeType)
-            clipData = ClipData.newUri(context.contentResolver, label, uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
 
     fun formatSize(bytes: Long): String {
         return when {

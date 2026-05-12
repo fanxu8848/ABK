@@ -61,9 +61,9 @@ on:
         type: string
         default: "Sun Dec 01 08:10:00 UTC 2024"
         required: false
-      # ==================== Droidspaces 配置 ====================
-      droidspaces:
-        description: "Droidspaces 容器支持 (5.10~6.6: 槽位补丁, 6.12: 开/关)"
+      # ==================== 虚拟化支持配置 ====================
+      virtualization_support:
+        description: "虚拟化支持 (5.10~6.6: 槽位补丁, 6.12: 开/关)"
         type: choice
         options:
           - "off"
@@ -84,6 +84,14 @@ on:
         default: false
       use_ddk:
         description: "启用 DDK 防格机 LSM"
+        type: boolean
+        default: false
+      use_ntsync:
+        description: "启用 NTsync"
+        type: boolean
+        default: false
+      use_networking:
+        description: "启用网络增强（IPSet + BBR）"
         type: boolean
         default: false
       use_kpm:
@@ -165,10 +173,12 @@ jobs:
       use_zram: ${{ inputs.use_zram }}
       use_bbg: ${{ inputs.use_bbg }}
       use_ddk: ${{ inputs.use_ddk }}
+      use_ntsync: ${{ inputs.use_ntsync || false }}
+      use_networking: ${{ inputs.use_networking || false }}
       use_kpm: ${{ inputs.use_kpm }}
       use_rekernel: ${{ inputs.use_rekernel }}
       cancel_susfs: ${{ inputs.cancel_susfs }}
-      droidspaces: ${{ inputs.droidspaces }}
+      virtualization_support: ${{ inputs.virtualization_support }}
       zram_full_algo: ${{ inputs.zram_full_algo }}
       zram_extra_algos: ${{ inputs.zram_extra_algos || '' }}
       kpm_password: ${{ inputs.kpm_password || '' }}
@@ -187,10 +197,12 @@ jobs:
       use_zram: ${{ inputs.use_zram }}
       use_bbg: ${{ inputs.use_bbg }}
       use_ddk: ${{ inputs.use_ddk }}
+      use_ntsync: ${{ inputs.use_ntsync || false }}
+      use_networking: ${{ inputs.use_networking || false }}
       use_kpm: ${{ inputs.use_kpm }}
       use_rekernel: ${{ inputs.use_rekernel }}
       cancel_susfs: ${{ inputs.cancel_susfs }}
-      droidspaces: ${{ inputs.droidspaces }}
+      virtualization_support: ${{ inputs.virtualization_support }}
       zram_full_algo: ${{ inputs.zram_full_algo }}
       zram_extra_algos: ${{ inputs.zram_extra_algos || '' }}
       kpm_password: ${{ inputs.kpm_password || '' }}
@@ -209,10 +221,12 @@ jobs:
       use_zram: ${{ inputs.use_zram }}
       use_bbg: ${{ inputs.use_bbg }}
       use_ddk: ${{ inputs.use_ddk }}
+      use_ntsync: ${{ inputs.use_ntsync || false }}
+      use_networking: ${{ inputs.use_networking || false }}
       use_kpm: ${{ inputs.use_kpm }}
       use_rekernel: ${{ inputs.use_rekernel }}
       cancel_susfs: ${{ inputs.cancel_susfs }}
-      droidspaces: ${{ inputs.droidspaces }}
+      virtualization_support: ${{ inputs.virtualization_support }}
       zram_full_algo: ${{ inputs.zram_full_algo }}
       zram_extra_algos: ${{ inputs.zram_extra_algos || '' }}
       kpm_password: ${{ inputs.kpm_password || '' }}
@@ -231,10 +245,12 @@ jobs:
       use_zram: ${{ inputs.use_zram }}
       use_bbg: ${{ inputs.use_bbg }}
       use_ddk: ${{ inputs.use_ddk }}
+      use_ntsync: ${{ inputs.use_ntsync || false }}
+      use_networking: ${{ inputs.use_networking || false }}
       use_kpm: ${{ inputs.use_kpm }}
       use_rekernel: ${{ inputs.use_rekernel }}
       cancel_susfs: ${{ inputs.cancel_susfs }}
-      droidspaces: ${{ inputs.droidspaces }}
+      virtualization_support: ${{ inputs.virtualization_support }}
       zram_full_algo: ${{ inputs.zram_full_algo }}
       zram_extra_algos: ${{ inputs.zram_extra_algos || '' }}
       kpm_password: ${{ inputs.kpm_password || '' }}
@@ -253,10 +269,12 @@ jobs:
       use_zram: ${{ inputs.use_zram }}
       use_bbg: ${{ inputs.use_bbg }}
       use_ddk: ${{ inputs.use_ddk }}
+      use_ntsync: ${{ inputs.use_ntsync || false }}
+      use_networking: ${{ inputs.use_networking || false }}
       use_kpm: ${{ inputs.use_kpm }}
       use_rekernel: ${{ inputs.use_rekernel }}
       cancel_susfs: ${{ inputs.cancel_susfs }}
-      droidspaces: ${{ inputs.droidspaces }}
+      virtualization_support: ${{ inputs.virtualization_support }}
       zram_full_algo: ${{ inputs.zram_full_algo }}
       zram_extra_algos: ${{ inputs.zram_extra_algos || '' }}
       kpm_password: ${{ inputs.kpm_password || '' }}

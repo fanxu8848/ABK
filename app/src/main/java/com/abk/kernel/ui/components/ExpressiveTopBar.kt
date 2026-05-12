@@ -1,10 +1,12 @@
 package com.abk.kernel.ui.components
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -16,41 +18,67 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.abk.kernel.ui.theme.uiSurfaceColor
 
 @Composable
 fun ExpressiveTopBar(
     title: String,
     modifier: Modifier = Modifier,
+    navigationIcon: @Composable (() -> Unit)? = null,
     actions: @Composable RowScope.() -> Unit = {}
 ) {
-    val colors = MaterialTheme.colorScheme
+    val hasNavigation = navigationIcon != null
+    val titleStyle = if (hasNavigation) {
+        MaterialTheme.typography.titleLarge.copy(
+            fontWeight = FontWeight.Normal,
+            letterSpacing = 0.sp
+        )
+    } else {
+        MaterialTheme.typography.headlineMedium.copy(
+            fontSize = 34.sp,
+            lineHeight = 40.sp,
+            fontWeight = FontWeight.Normal,
+            letterSpacing = 0.sp
+        )
+    }
 
     Surface(
-        color = colors.surface,
-        tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
-        modifier = modifier.fillMaxWidth()
+        modifier = modifier.fillMaxWidth(),
+        color = uiSurfaceColor(MaterialTheme.colorScheme.surface),
+        contentColor = MaterialTheme.colorScheme.onSurface
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(colors.surface)
                 .statusBarsPadding()
-                .padding(start = 18.dp, end = 16.dp, top = 14.dp, bottom = 12.dp),
+                .padding(
+                    start = if (hasNavigation) 4.dp else 18.dp,
+                    top = 10.dp,
+                    end = 18.dp,
+                    bottom = 10.dp
+                ),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (navigationIcon != null) {
+                Box(
+                    modifier = Modifier.size(48.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    navigationIcon()
+                }
+            }
             Text(
                 text = title,
-                style = MaterialTheme.typography.titleLarge.copy(fontSize = 22.sp, lineHeight = 28.sp),
-                fontWeight = FontWeight.SemiBold,
-                color = colors.onSurface,
+                modifier = Modifier.weight(1f),
+                style = titleStyle,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
+                overflow = TextOverflow.Ellipsis
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                actions()
-            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                content = actions
+            )
         }
     }
 }

@@ -1,8 +1,6 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
-    alias(libs.plugins.kotlin.serialization)
 }
 
 val githubClientId = providers.gradleProperty("ABK_GITHUB_CLIENT_ID")
@@ -27,14 +25,14 @@ val hasReleaseSigning = !releaseStoreFile.orNull.isNullOrBlank() &&
 
 android {
     namespace = "com.abk.kernel"
-    compileSdk = 35
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.abk.kernel"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.0.3"
+        versionCode = 7
+        versionName = "1.0.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -72,9 +70,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
-    kotlinOptions {
-        jvmTarget = "11"
-    }
     buildFeatures {
         compose = true
         buildConfig = true
@@ -92,6 +87,7 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
+    implementation(libs.google.material)
     implementation(libs.androidx.navigation.compose)
 
     // Network

@@ -5,6 +5,8 @@ import com.abk.kernel.data.api.GitHubApiService
 import com.abk.kernel.data.api.GitHubAuthService
 import com.abk.kernel.data.api.NetworkClient
 import com.abk.kernel.data.model.*
+import okhttp3.ResponseBody
+import java.util.zip.ZipInputStream
 
 sealed class Result<out T> {
     data class Success<T>(val data: T) : Result<T>()
@@ -212,6 +214,32 @@ class GitHubRepository(
         }.getOrElse { Result.Error(it.message ?: "Unknown error") }
     }
 
+    suspend fun downloadJobLogs(owner: String, repo: String, jobId: Long): Result<String> {
+        val api = apiService ?: return Result.Error("Not authenticated")
+        return runCatching<Result<String>> {
+            val resp = api.downloadJobLogs(owner, repo, jobId)
+            if (resp.isSuccessful) {
+                val logs = resp.body()?.use { it.string() }.orEmpty()
+                Result.Success(logs)
+            } else {
+                Result.Error("Download job logs failed: ${resp.code()}", resp.code())
+            }
+        }.getOrElse { Result.Error(it.toDownloadLogMessage("Download job logs failed")) }
+    }
+
+    suspend fun downloadRunLogs(owner: String, repo: String, runId: Long): Result<String> {
+        val api = apiService ?: return Result.Error("Not authenticated")
+        return runCatching<Result<String>> {
+            val resp = api.downloadRunLogs(owner, repo, runId)
+            if (resp.isSuccessful) {
+                val logs = resp.body()?.use { it.readZipText() }.orEmpty()
+                Result.Success(logs)
+            } else {
+                Result.Error("Download run logs failed: ${resp.code()}", resp.code())
+            }
+        }.getOrElse { Result.Error(it.toDownloadLogMessage("Download run logs failed")) }
+    }
+
     suspend fun listArtifacts(owner: String, repo: String, runId: Long): Result<List<Artifact>> {
         val api = apiService ?: return Result.Error("Not authenticated")
         return runCatching<Result<List<Artifact>>> {
@@ -225,6 +253,25 @@ class GitHubRepository(
         }.getOrElse { Result.Error(it.message ?: "Unknown error") }
     }
 
+    suspend fun listReleases(owner: String, repo: String, perPage: Int = 100): Result<List<GitHubReleaseSummary>> {
+        val api = apiService ?: return Result.Error("Not authenticated")
+        return runCatching<Result<List<GitHubReleaseSummary>>> {
+            val collected = mutableListOf<GitHubReleaseSummary>()
+            var page = 1
+            while (true) {
+                val resp = api.listReleases(owner, repo, perPage = perPage, page = page)
+                if (!resp.isSuccessful) {
+                    return@runCatching Result.Error("List releases failed: ${resp.code()}", resp.code())
+                }
+                val releases = resp.body().orEmpty()
+                collected += releases
+                if (releases.size < perPage) break
+                page += 1
+            }
+            Result.Success(collected)
+        }.getOrElse { Result.Error(it.message ?: "Unknown error") }
+    }
+
     suspend fun getReleaseByTag(owner: String, repo: String, tag: String): Result<GitHubRelease?> {
         val api = apiService ?: return Result.Error("Not authenticated")
         return runCatching<Result<GitHubRelease?>> {
@@ -235,5 +282,60 @@ class GitHubRepository(
                 else -> Result.Error("Get release failed: ${resp.code()}", resp.code())
             }
         }.getOrElse { Result.Error(it.message ?: "Unknown error") }
+    }
+
+    suspend fun listReleaseAssets(
+        owner: String,
+        repo: String,
+        releaseId: Long,
+        perPage: Int = 100
+    ): Result<List<ReleaseAsset>> {
+        val api = apiService ?: return Result.Error("Not authenticated")
+        return runCatching<Result<List<ReleaseAsset>>> {
+            val collected = mutableListOf<ReleaseAsset>()
+            var page = 1
+            while (true) {
+                val resp = api.listReleaseAssets(owner, repo, releaseId, perPage = perPage, page = page)
+                if (!resp.isSuccessful) {
+                    return@runCatching Result.Error("List release assets failed: ${resp.code()}", resp.code())
+                }
+                val assets = resp.body().orEmpty()
+                collected += assets
+                if (assets.size < perPage) break
+                page += 1
+            }
+            Result.Success(collected)
+        }.getOrElse { Result.Error(it.message ?: "Unknown error") }
+    }
+
+    private fun ResponseBody.readZipText(): String {
+        val output = StringBuilder()
+        ZipInputStream(byteStream()).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                if (!entry.isDirectory) {
+                    output.appendLine("===== ${entry.name} =====")
+                    val buffer = ByteArray(DEFAULT_LOG_BUFFER_SIZE)
+                    while (true) {
+                        val read = zip.read(buffer)
+                        if (read <= 0) break
+                        output.append(String(buffer, 0, read, Charsets.UTF_8))
+                    }
+                    output.appendLine()
+                }
+                zip.closeEntry()
+            }
+        }
+        return output.toString()
+    }
+
+    private fun Throwable.toDownloadLogMessage(prefix: String): String {
+        val type = this::class.java.simpleName.ifBlank { "Exception" }
+        val detail = message?.takeIf { it.isNotBlank() }?.let { " - $it" }.orEmpty()
+        return "$prefix: $type$detail"
+    }
+
+    private companion object {
+        const val DEFAULT_LOG_BUFFER_SIZE = 8 * 1024
     }
 }

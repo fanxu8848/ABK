@@ -93,6 +93,22 @@ interface GitHubApiService {
         @Query("per_page") perPage: Int = 100
     ): Response<WorkflowJobsResponse>
 
+    @Streaming
+    @GET("repos/{owner}/{repo}/actions/jobs/{job_id}/logs")
+    suspend fun downloadJobLogs(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("job_id") jobId: Long
+    ): Response<ResponseBody>
+
+    @Streaming
+    @GET("repos/{owner}/{repo}/actions/runs/{run_id}/logs")
+    suspend fun downloadRunLogs(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("run_id") runId: Long
+    ): Response<ResponseBody>
+
     // ── Artifacts ─────────────────────────────────────────────────────────
     @GET("repos/{owner}/{repo}/actions/runs/{run_id}/artifacts")
     suspend fun listArtifacts(
@@ -103,12 +119,29 @@ interface GitHubApiService {
     ): Response<ArtifactsResponse>
 
     // ── Releases ─────────────────────────────────────────────────────────
+    @GET("repos/{owner}/{repo}/releases")
+    suspend fun listReleases(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Query("per_page") perPage: Int = 100,
+        @Query("page") page: Int = 1
+    ): Response<List<GitHubReleaseSummary>>
+
     @GET("repos/{owner}/{repo}/releases/tags/{tag}")
     suspend fun getReleaseByTag(
         @Path("owner") owner: String,
         @Path("repo") repo: String,
         @Path("tag") tag: String
     ): Response<GitHubRelease>
+
+    @GET("repos/{owner}/{repo}/releases/{release_id}/assets")
+    suspend fun listReleaseAssets(
+        @Path("owner") owner: String,
+        @Path("repo") repo: String,
+        @Path("release_id") releaseId: Long,
+        @Query("per_page") perPage: Int = 100,
+        @Query("page") page: Int = 1
+    ): Response<List<ReleaseAsset>>
 
     @Streaming
     @GET("repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip")

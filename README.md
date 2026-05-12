@@ -52,17 +52,17 @@ ABK 的目标是把手动 fork、启用 Actions、填写 GKI 参数、触发构�
 
 ## 风险提示
 
-## 🧪 Droidspaces 容器支持（实验性）
+## 🧪 虚拟化支持（实验性）
 
 > **实验性功能：** 不保证所有 GKI 版本均能成功构建或启动，刷入前请务必备份 Boot 镜像。
 >
-> **TIPS：** 工作流使用的是 [Droidspaces](https://github.com/ravindu644/Droidspaces-OSS) 的 [官方补丁](https://github.com/ravindu644/Droidspaces-OSS/tree/main/Documentation/resources/kernel-patches/GKI) ，如有更好的补丁可以提个issues，此外由于存在三个补丁，或许需要反复试验以确保其中一个适配你的机型，请根据他人或实际经验来选择。
+> **TIPS：** 工作流使用的是上游虚拟化补丁，如有更好的补丁可以提个 issues。此外由于存在三个补丁，或许需要反复试验以确保其中一个适配你的机型，请根据他人或实际经验来选择。
 
-[Droidspaces](https://github.com/ravindu644/Droidspaces-OSS) 是一个轻量级的 Linux 容器工具，可以在 Android 上运行完整的 Linux 环境（支持 systemd、OpenRC 等），用于搭建开发环境、运行服务器等场景。
+虚拟化支持会为内核启用 Linux 容器运行所需的 IPC、PID namespace、SysV IPC、POSIX mqueue 等能力，便于在 Android 上运行完整 Linux 环境、搭建开发环境或运行服务。
 
 **支持范围：** 5.10 / 5.15 / 6.1 / 6.6 / 6.12
 
-**使用方式：** 在手动触发构建时，选择 `Droidspaces 容器支持` 选项：
+**使用方式：** 在手动触发构建时，选择 `虚拟化支持` 选项：
 
 | 选项 | 说明 |
 |:---:|:---|
@@ -215,8 +215,9 @@ ABK 基于以下项目、仓库和社区工作继续开发。这里集中列出�
 - GCC prebuilts：[LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1](https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1)
 - Baseband Guard：[vc-teahouse/Baseband-guard](https://github.com/vc-teahouse/Baseband-guard)
 - Re-Kernel：[Sakion-Team/Re-Kernel](https://github.com/Sakion-Team/Re-Kernel)
+- Droidspaces / 虚拟化支持补丁来源：[ravindu644/Droidspaces-OSS](https://github.com/ravindu644/Droidspaces-OSS)
 - KernelSU 官方站点：https://kernelsu.org/
-
+- NTsync，setip和BBR来源： [WildKernels/kernel_patches](https://github.com/WildKernels/kernel_patche) PR by [huime180](https://github.com/huime180)
 ## License
 
 本仓库包含多个第三方项目、补丁和构建产物引用。使用、分发或修改前请分别遵守对应上游项目的许可证和使用条款。使用 ABK、工作流、自定义模块或构建产物造成的设备损坏、数据丢失、账号风险、服务中断、合规问题或任何直接/间接损失，均由使用者自行承担。

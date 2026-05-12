@@ -9,26 +9,26 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -49,6 +49,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -59,19 +60,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
 import com.abk.kernel.ui.screens.AuthGateScreen
 import com.abk.kernel.ui.screens.BuildScreen
 import com.abk.kernel.ui.screens.FlashScreen
 import com.abk.kernel.ui.screens.SettingsScreen
 import com.abk.kernel.ui.screens.StatusScreen
 import com.abk.kernel.ui.theme.AbkTheme
+import com.abk.kernel.ui.theme.LocalUiSurfaceAlpha
+import com.abk.kernel.ui.theme.uiSurfaceColor
 import com.abk.kernel.viewmodel.AuthStep
 import com.abk.kernel.viewmodel.MainViewModel
-import kotlin.coroutines.cancellation.CancellationException
-import kotlinx.coroutines.flow.collect
 
 class MainActivity : ComponentActivity() {
 
@@ -92,20 +96,71 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            AbkTheme(themeMode = state.themeMode) {
-                when {
-                    !state.termsLoaded -> Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.surface
-                    ) {}
-                    !state.termsAccepted -> TermsAgreementDialog(
-                        onAccept = vm::acceptTerms,
-                        onDecline = { finishAffinity() }
-                    )
-                    state.authStep != AuthStep.READY -> AuthGateScreen(vm)
-                    else -> AbkMainScaffold(vm)
+            AbkTheme(
+                themeMode = state.themeMode,
+                dynamicColorEnabled = state.dynamicColorEnabled,
+                customThemeColorArgb = state.customThemeColorArgb,
+                customAccentColorArgb = state.customAccentColorArgb
+            ) {
+                AppBackgroundHost(
+                    backgroundUri = state.customBackgroundUri,
+                    backgroundEnabled = state.backgroundImageEnabled,
+                    uiSurfaceAlpha = state.uiSurfaceAlpha
+                ) {
+                    when {
+                        !state.termsLoaded -> Surface(
+                            modifier = Modifier.fillMaxSize(),
+                            color = MaterialTheme.colorScheme.surface
+                        ) {}
+                        !state.termsAccepted -> TermsAgreementDialog(
+                            onAccept = vm::acceptTerms,
+                            onDecline = { finishAffinity() }
+                        )
+                        state.authStep != AuthStep.READY -> AuthGateScreen(vm)
+                        else -> AbkMainScaffold(vm)
+                    }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AppBackgroundHost(
+    backgroundUri: String?,
+    backgroundEnabled: Boolean,
+    uiSurfaceAlpha: Float,
+    content: @Composable () -> Unit
+) {
+    val hasBackground = backgroundEnabled && !backgroundUri.isNullOrBlank()
+    val colorScheme = MaterialTheme.colorScheme
+    val scrimColor = if (colorScheme.surface.luminance() > 0.5f) {
+        colorScheme.surface.copy(alpha = 0.28f)
+    } else {
+        Color.Black.copy(alpha = 0.38f)
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(colorScheme.surface)
+    ) {
+        if (hasBackground) {
+            AsyncImage(
+                model = backgroundUri,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(scrimColor)
+            )
+        }
+        CompositionLocalProvider(
+            LocalUiSurfaceAlpha provides if (hasBackground) uiSurfaceAlpha.coerceIn(0f, 1f) else 1f
+        ) {
+            content()
         }
     }
 }
@@ -227,9 +282,41 @@ private fun AbkMainScaffold(vm: MainViewModel) {
     val state by vm.uiState.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var selectedTab by rememberSaveable { mutableStateOf(AbkTab.Status) }
+    var flashDetailPageVisible by rememberSaveable { mutableStateOf(false) }
+    var settingsThemePageVisible by rememberSaveable { mutableStateOf(false) }
+    var buildPlanPageVisible by rememberSaveable { mutableStateOf(false) }
     var lastBackAt by remember { mutableStateOf(0L) }
     val visibleTabs = AbkTab.entries
     val activeTab = selectedTab
+    val motionScheme = MaterialTheme.motionScheme
+    val hideBottomBar = when (activeTab) {
+        AbkTab.Build -> buildPlanPageVisible
+        AbkTab.Flash -> flashDetailPageVisible
+        AbkTab.Settings -> settingsThemePageVisible
+        else -> false
+    }
+
+    LaunchedEffect(activeTab) {
+        when (activeTab) {
+            AbkTab.Build -> {
+                flashDetailPageVisible = false
+                settingsThemePageVisible = false
+            }
+            AbkTab.Flash -> {
+                buildPlanPageVisible = false
+                settingsThemePageVisible = false
+            }
+            AbkTab.Settings -> {
+                buildPlanPageVisible = false
+                flashDetailPageVisible = false
+            }
+            else -> {
+                buildPlanPageVisible = false
+                flashDetailPageVisible = false
+                settingsThemePageVisible = false
+            }
+        }
+    }
 
     fun handleTopLevelBack() {
         val now = System.currentTimeMillis()
@@ -241,39 +328,31 @@ private fun AbkMainScaffold(vm: MainViewModel) {
         }
     }
 
-    BackHandler(onBack = ::handleTopLevelBack)
-    PredictiveBackHandler { progress ->
-        try {
-            progress.collect { }
-            handleTopLevelBack()
-        } catch (_: CancellationException) {
-        }
+    if (!hideBottomBar) {
+        BackHandler(onBack = ::handleTopLevelBack)
     }
 
     Scaffold(
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surface),
         bottomBar = {
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .height(82.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
-                tonalElevation = 6.dp,
-                shadowElevation = 0.dp
+            AnimatedVisibility(
+                visible = !hideBottomBar,
+                enter = fadeIn(animationSpec = motionScheme.fastEffectsSpec()) +
+                    slideInVertically(animationSpec = motionScheme.fastSpatialSpec()) { height -> height },
+                exit = ExitTransition.None
             ) {
                 NavigationBar(
-                    containerColor = Color.Transparent,
-                    tonalElevation = 0.dp,
-                    modifier = Modifier.padding(horizontal = 10.dp)
+                    containerColor = uiSurfaceColor(MaterialTheme.colorScheme.surfaceContainer),
+                    tonalElevation = 0.dp
                 ) {
                     visibleTabs.forEach { tab ->
                         NavigationBarItem(
                             selected = activeTab == tab,
                             onClick = { selectedTab = tab },
+                            alwaysShowLabel = false,
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                selectedTextColor = MaterialTheme.colorScheme.onSurface,
                                 indicatorColor = MaterialTheme.colorScheme.primaryContainer,
                                 unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                 unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -286,15 +365,11 @@ private fun AbkMainScaffold(vm: MainViewModel) {
                                         AbkTab.Flash -> if (state.rootGranted) Icons.Default.FlashOn else Icons.Default.FolderOpen
                                         AbkTab.Settings -> Icons.Default.Settings
                                     },
-                                    contentDescription = tab.displayLabel(state.rootGranted),
-                                    modifier = Modifier.size(22.dp)
+                                    contentDescription = tab.displayLabel(state.rootGranted)
                                 )
                             },
                             label = {
-                                Text(
-                                    text = tab.displayLabel(state.rootGranted),
-                                    style = MaterialTheme.typography.labelSmall
-                                )
+                                Text(text = tab.displayLabel(state.rootGranted))
                             }
                         )
                     }
@@ -302,26 +377,21 @@ private fun AbkMainScaffold(vm: MainViewModel) {
             }
         }
     ) { padding ->
-        androidx.compose.foundation.layout.Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+        val contentPadding = if (hideBottomBar) PaddingValues(0.dp) else padding
+        androidx.compose.foundation.layout.Box(modifier = Modifier.padding(contentPadding).fillMaxSize()) {
             AnimatedContent(
                 targetState = activeTab,
                 transitionSpec = {
                     val direction = if (targetState.ordinal > initialState.ordinal) 1 else -1
                     (
-                        fadeIn(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)) +
+                        fadeIn(animationSpec = motionScheme.defaultEffectsSpec()) +
                             slideInHorizontally(
-                                animationSpec = spring(
-                                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                                    stiffness = Spring.StiffnessLow
-                                )
+                                animationSpec = motionScheme.defaultSpatialSpec()
                             ) { width -> direction * width / 4 }
                         ) togetherWith (
-                        fadeOut(animationSpec = spring(stiffness = Spring.StiffnessMedium)) +
+                        fadeOut(animationSpec = motionScheme.fastEffectsSpec()) +
                             slideOutHorizontally(
-                                animationSpec = spring(
-                                    dampingRatio = Spring.DampingRatioNoBouncy,
-                                    stiffness = Spring.StiffnessMedium
-                                )
+                                animationSpec = motionScheme.fastSpatialSpec()
                             ) { width -> -direction * width / 6 }
                         )
                 },
@@ -329,9 +399,21 @@ private fun AbkMainScaffold(vm: MainViewModel) {
             ) { tab ->
                 when (tab) {
                     AbkTab.Status -> StatusScreen(vm)
-                    AbkTab.Build -> BuildScreen(vm)
-                    AbkTab.Flash -> FlashScreen(vm)
-                    AbkTab.Settings -> SettingsScreen(vm)
+                    AbkTab.Build -> BuildScreen(
+                        vm = vm,
+                        outerPadding = contentPadding,
+                        onPlanPageVisibleChange = { buildPlanPageVisible = it }
+                    )
+                    AbkTab.Flash -> FlashScreen(
+                        vm = vm,
+                        outerPadding = contentPadding,
+                        onDetailPageVisibleChange = { flashDetailPageVisible = it }
+                    )
+                    AbkTab.Settings -> SettingsScreen(
+                        vm = vm,
+                        outerPadding = contentPadding,
+                        onThemePageVisibleChange = { settingsThemePageVisible = it }
+                    )
                 }
             }
         }
